@@ -1,7 +1,7 @@
-mediapipe==0.10.14
-opencv-python
-customtkinter
+mediapipe==0.10.35
+opencv-python-headless
 Pillow
 matplotlib
 numpy
-reportlab
+streamlit
+google-genai
