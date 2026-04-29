@@ -1,11 +1,18 @@
 # analyzer.py
 import cv2
-import mediapipe as mp
 import numpy as np
 
-mp_pose    = mp.solutions.pose
-mp_drawing = mp.solutions.drawing_utils
-LM         = mp_pose.PoseLandmark
+# ── IMPORT MEDIAPIPE KOMPATIBEL 0.10.35 ─────────────────────
+try:
+    import mediapipe as mp
+    mp_pose    = mp.solutions.pose
+    mp_drawing = mp.solutions.drawing_utils
+    LM         = mp_pose.PoseLandmark
+    MEDIAPIPE_OK = True
+except AttributeError:
+    from mediapipe.tasks import python as mp_tasks
+    from mediapipe.tasks.python import vision
+    MEDIAPIPE_OK = False
 
 # ── FUNGSI UMUM ──────────────────────────────────────────────
 def hitung_sudut(lm, a, b, c, h, w):
@@ -15,6 +22,8 @@ def hitung_sudut(lm, a, b, c, h, w):
     return float(np.degrees(np.arccos(np.clip(cos, -1, 1))))
 
 def klasifikasi_serangan(lm, h, w):
+    import mediapipe as mp
+    LM = mp.solutions.pose.PoseLandmark
     skor = {"Pukulan": 0, "Tendangan": 0, "Sapuan": 0, "Tangkisan": 0}
     sk   = hitung_sudut(lm, LM.RIGHT_SHOULDER, LM.RIGHT_ELBOW, LM.RIGHT_WRIST,  h, w)
     ski  = hitung_sudut(lm, LM.LEFT_SHOULDER,  LM.LEFT_ELBOW,  LM.LEFT_WRIST,   h, w)
@@ -33,7 +42,6 @@ def klasifikasi_serangan(lm, h, w):
     return skor, sk, ski, slk, slki
 
 def buat_swot_fallback(dominan, sk, ski, slk, slki):
-    """SWOT sederhana sebagai cadangan jika Gemini tidak tersedia."""
     swot = {"Strengths": [], "Weaknesses": [], "Opportunities": [], "Threats": []}
     swot["Strengths"].append(f"Teknik {dominan.lower()} terdeteksi dominan")
     if min(slk, slki) < 150:
@@ -51,6 +59,9 @@ def buat_swot_fallback(dominan, sk, ski, slk, slki):
     return swot
 
 def gambar_kerangka(img, landmarks):
+    import mediapipe as mp
+    mp_drawing = mp.solutions.drawing_utils
+    mp_pose    = mp.solutions.pose
     titik = mp_drawing.DrawingSpec(color=(0, 200, 255), thickness=3, circle_radius=4)
     garis = mp_drawing.DrawingSpec(color=(232, 84, 26),  thickness=2)
     mp_drawing.draw_landmarks(img, landmarks, mp_pose.POSE_CONNECTIONS, titik, garis)
@@ -71,22 +82,16 @@ def overlay_sudut(img, sk, ski, slk, slki):
 
 def _paket_hasil(mode, img, sk, ski, slk, slki, skor, dominan,
                  total_frame=0, gunakan_gemini=True):
-    """Bungkus hasil analisis + panggil Gemini jika tersedia."""
-    swot  = buat_swot_fallback(dominan, sk, ski, slk, slki)
-    saran = []
+    swot      = buat_swot_fallback(dominan, sk, ski, slk, slki)
+    saran     = []
     ringkasan = ""
-
     if gunakan_gemini:
         try:
             from gemini_analyzer import buat_analisis_gemini
             gem = buat_analisis_gemini(
-                mode=mode,
-                dominan=dominan,
-                skor_serangan=skor,
-                siku_kanan=sk,
-                siku_kiri=ski,
-                lutut_kanan=slk,
-                lutut_kiri=slki,
+                mode=mode, dominan=dominan, skor_serangan=skor,
+                siku_kanan=sk, siku_kiri=ski,
+                lutut_kanan=slk, lutut_kiri=slki,
                 total_frame=total_frame,
             )
             if gem["sukses"]:
@@ -94,8 +99,7 @@ def _paket_hasil(mode, img, sk, ski, slk, slki, skor, dominan,
                 saran     = gem["saran"]
                 ringkasan = gem["ringkasan"]
         except Exception:
-            pass  # Tetap pakai fallback jika import gagal
-
+            pass
     return {
         "mode":          mode,
         "image_bgr":     img,
@@ -113,25 +117,26 @@ def _paket_hasil(mode, img, sk, ski, slk, slki, skor, dominan,
 
 # ── MODE 1: ANALISIS FOTO ────────────────────────────────────
 def analisis_foto(image_path):
-    pose = mp_pose.Pose(static_image_mode=True, model_complexity=2,
-                        min_detection_confidence=0.5)
+    import mediapipe as mp
+    mp_pose    = mp.solutions.pose
+    pose = mp_pose.Pose(
+        static_image_mode=True,
+        model_complexity=1,
+        min_detection_confidence=0.5
+    )
     img = cv2.imread(image_path)
     if img is None:
         pose.close()
         return None
-
-    # Resize agar tidak berat (max 720p)
     h, w = img.shape[:2]
     if h > 720:
         skala = 720 / h
         img   = cv2.resize(img, (int(w * skala), int(h * skala)))
-
     h, w  = img.shape[:2]
     hasil = pose.process(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
     pose.close()
     if not hasil.pose_landmarks:
         return None
-
     lm = hasil.pose_landmarks.landmark
     skor, sk, ski, slk, slki = klasifikasi_serangan(lm, h, w)
     dominan = max(skor, key=skor.get)
@@ -142,9 +147,13 @@ def analisis_foto(image_path):
 # ── MODE 2: ANALISIS VIDEO ───────────────────────────────────
 def analisis_video(video_path, callback_frame=None, callback_selesai=None,
                    stop_flag=None):
+    import mediapipe as mp
+    mp_pose = mp.solutions.pose
     pose = mp_pose.Pose(
-        static_image_mode=False, model_complexity=1,
-        min_detection_confidence=0.5, min_tracking_confidence=0.5
+        static_image_mode=False,
+        model_complexity=1,
+        min_detection_confidence=0.5,
+        min_tracking_confidence=0.5
     )
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
@@ -165,24 +174,17 @@ def analisis_video(video_path, callback_frame=None, callback_selesai=None,
         ret, frame = cap.read()
         if not ret:
             break
-
         frame_count += 1
-
-        # Resize frame agar ringan (max 480p)
         h, w = frame.shape[:2]
         if w > 854:
             skala = 854 / w
             frame = cv2.resize(frame, (854, int(h * skala)))
-
-        # Proses setiap 5 frame
         if frame_count % 5 != 0:
             if callback_frame:
                 callback_frame(frame.copy())
             continue
-
         h, w  = frame.shape[:2]
         hasil = pose.process(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
-
         if hasil.pose_landmarks:
             lm = hasil.pose_landmarks.landmark
             skor, sk, ski, slk, slki = klasifikasi_serangan(lm, h, w)
@@ -194,7 +196,6 @@ def analisis_video(video_path, callback_frame=None, callback_selesai=None,
             gambar_kerangka(frame, hasil.pose_landmarks)
             overlay_sudut(frame, sk, ski, slk, slki)
             last_frame = frame.copy()
-
         if callback_frame:
             callback_frame(frame.copy())
 
@@ -221,15 +222,18 @@ def analisis_video(video_path, callback_frame=None, callback_selesai=None,
 
 # ── MODE 3: KAMERA REAL-TIME ─────────────────────────────────
 def analisis_kamera(callback_frame=None, callback_data=None, stop_flag=None):
+    import mediapipe as mp
+    mp_pose = mp.solutions.pose
     pose = mp_pose.Pose(
-        static_image_mode=False, model_complexity=1,
-        min_detection_confidence=0.5, min_tracking_confidence=0.5
+        static_image_mode=False,
+        model_complexity=1,
+        min_detection_confidence=0.5,
+        min_tracking_confidence=0.5
     )
     cap = cv2.VideoCapture(0)
     if not cap.isOpened():
         pose.close()
         return
-
     while True:
         if stop_flag and stop_flag[0]:
             break
@@ -247,6 +251,5 @@ def analisis_kamera(callback_frame=None, callback_data=None, stop_flag=None):
                 callback_data(skor, sk, ski, slk, slki)
         if callback_frame:
             callback_frame(frame.copy())
-
     cap.release()
     pose.close()
